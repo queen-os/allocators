@@ -251,7 +251,7 @@ impl Block {
 
 /// Heap allocator using explicit free list.
 pub struct HeapAlloc {
-    heap: NonNull<u8>,
+    heap: *mut u8,
     head_block: *mut Block,
 
     allocated_user: usize,
@@ -263,7 +263,7 @@ impl HeapAlloc {
     /// Create an empty heap.
     pub const fn new() -> Self {
         HeapAlloc {
-            heap: NonNull::dangling(),
+            heap: null_mut(),
             head_block: null_mut(),
             allocated_user: 0,
             allocated_real: 0,
@@ -274,7 +274,7 @@ impl HeapAlloc {
     /// Init heap with a range of memory [start, end).
     /// # Safety
     pub unsafe fn init(&mut self, start: NonNull<u8>, size: usize) {
-        self.heap = start;
+        self.heap = start.as_ptr();
         let payload_size = size - BlockMetaInfo::SIZE * 2;
         let block = Block::new_free_block(start.cast(), payload_size, null(), null());
         self.head_block = block.as_ptr();
@@ -283,7 +283,7 @@ impl HeapAlloc {
 
     #[inline]
     pub fn heap(&self) -> Range<usize> {
-        let start = self.heap.as_ptr() as usize;
+        let start = self.heap as usize;
         start..start + self.total
     }
 
@@ -342,7 +342,7 @@ impl HeapAlloc {
             self.head_block = block.as_ptr();
             return;
         }
-        if block.as_ptr() != self.heap.as_ptr().cast() {
+        if block.as_ptr() != self.heap.cast() {
             let mut physical_prev = NonNull::new_unchecked(block.as_mut().physical_prev());
             if !physical_prev.as_ref().is_used() {
                 physical_prev.as_mut().unsplit(block, false);
@@ -350,7 +350,7 @@ impl HeapAlloc {
             }
         }
         if block.as_ptr().cast::<u8>().add(block.as_ref().size())
-            < self.heap.as_ptr().add(self.total)
+            < self.heap.add(self.total)
         {
             let physical_next = NonNull::new_unchecked(block.as_mut().physical_next());
             if !physical_next.as_ref().is_used() {
