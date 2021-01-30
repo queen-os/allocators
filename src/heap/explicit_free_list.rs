@@ -259,6 +259,8 @@ pub struct HeapAlloc {
     total: usize,
 }
 
+unsafe impl Send for HeapAlloc {}
+
 impl HeapAlloc {
     /// Create an empty heap.
     pub const fn new() -> Self {
@@ -349,9 +351,7 @@ impl HeapAlloc {
                 block = physical_prev;
             }
         }
-        if block.as_ptr().cast::<u8>().add(block.as_ref().size())
-            < self.heap.add(self.total)
-        {
+        if block.as_ptr().cast::<u8>().add(block.as_ref().size()) < self.heap.add(self.total) {
             let physical_next = NonNull::new_unchecked(block.as_mut().physical_next());
             if !physical_next.as_ref().is_used() {
                 block.as_mut().unsplit(physical_next, true);
