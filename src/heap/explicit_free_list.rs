@@ -386,6 +386,7 @@ impl<'a> Iterator for BlockIterMut<'a> {
     }
 }
 
+/// A locked version of [`HeapAlloc`]
 pub struct LockedHeapAlloc(Mutex<HeapAlloc>);
 
 impl LockedHeapAlloc {
