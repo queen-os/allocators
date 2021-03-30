@@ -1,6 +1,5 @@
 use core::{
     alloc::{GlobalAlloc, Layout},
-    cmp::max,
     iter::Iterator,
     marker::PhantomData,
     mem::size_of,
@@ -244,7 +243,6 @@ impl Block {
             }
         }
         let new_payload_size = self.payload_size() + right.as_ref().size();
-        right.as_mut().set_payload_size(new_payload_size);
         self.set_payload_size(new_payload_size);
     }
 }
@@ -276,6 +274,8 @@ impl HeapAlloc {
     /// Init heap with a range of memory [start, end).
     /// # Safety
     pub unsafe fn init(&mut self, start: NonNull<u8>, size: usize) {
+        assert_eq!(start.as_ptr().align_offset(8), 0);
+
         self.heap = start.as_ptr();
         let payload_size = size - BlockMetaInfo::SIZE * 2;
         let block = Block::new_free_block(start.cast(), payload_size, null(), null());
@@ -309,14 +309,7 @@ impl HeapAlloc {
 
     /// Allocate a range of memory from the heap satisfying `layout` requirements.
     pub fn alloc(&mut self, layout: Layout) -> *mut u8 {
-        let size = max(
-            if layout.size() % 2 == 0 {
-                layout.size()
-            } else {
-                layout.size() + 1
-            },
-            max(layout.align(), size_of::<*mut Block>() * 2),
-        );
+        let size = align_up(layout.size(), 8).max(size_of::<*mut Block>() * 2);
         self.block_iter_mut()
             .find(|block| unsafe { block.as_ref().payload_size() >= size })
             .map(|mut block| unsafe {
@@ -416,6 +409,16 @@ unsafe impl GlobalAlloc for LockedHeapAlloc {
     }
 }
 
+#[inline]
+fn align_up(num: usize, align: usize) -> usize {
+    let align_mask = align - 1;
+    if num & align_mask == 0 {
+        num // already aligned
+    } else {
+        (num | align_mask) + 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,7 +470,6 @@ mod tests {
             let block2_ptr = block1.alloc(16);
             assert!(!block2_ptr.is_null());
             let block2 = block2_ptr.as_mut().unwrap();
-            dbg!(block1 as *mut _);
             assert_eq!(block1.physical_next(), block2 as *mut _);
             assert_eq!(block2.physical_prev(), block1 as *mut _);
             assert!(block1.is_used());
@@ -481,19 +483,20 @@ mod tests {
     }
 
     #[test]
-    fn heap_allocator() {
+    fn allocator() {
         unsafe {
             let mut space = [0u8; 1024];
             let mut allocator = HeapAlloc::new();
             allocator.init(NonNull::new_unchecked(space.as_mut_ptr()), 1024);
             assert_eq!(allocator.stats_total_bytes(), 1024);
+
             let layout = Layout::new::<usize>();
             let data = allocator.alloc(layout);
             assert!(!data.is_null());
-            assert_eq!(allocator.stats_alloc_user(), layout.size());
+            assert!(allocator.stats_alloc_user() >= layout.size());
             assert_eq!(
                 allocator.stats_alloc_real(),
-                layout.size() + BlockMetaInfo::SIZE * 2
+                allocator.stats_alloc_user() + BlockMetaInfo::SIZE * 2
             );
             allocator.dealloc(NonNull::new_unchecked(data), layout);
             assert_eq!(allocator.stats_alloc_user(), 0);
