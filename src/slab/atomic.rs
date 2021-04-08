@@ -12,6 +12,15 @@ pub struct AtomicPtr<T> {
     p: UnsafeCell<*mut T>,
 }
 
+unsafe impl<T> Send for AtomicPtr<T> {}
+unsafe impl<T> Sync for AtomicPtr<T> {}
+
+impl<T> Default for AtomicPtr<T> {
+    fn default() -> Self {
+        Self::new(core::ptr::null_mut())
+    }
+}
+
 impl<T> AtomicPtr<T> {
     #[inline]
     pub fn new(ptr: *mut T) -> Self {
@@ -161,11 +170,16 @@ impl<T> AtomicPtr<T> {
     where
         F: FnMut(*mut T) -> Option<*mut T>,
     {
-        let mut prev = self.load(fetch_order);
-        while let Some(next) = f(prev) {
-            match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
-                x @ Ok(_) => return x,
-                Err(next_prev) => prev = next_prev,
+        let mut prev = atomic_load(self.p.get(), fetch_order);
+        let mut counter = take_counter(prev);
+        while let Some(next) = f(erase_counter(prev)) {
+            let next = with_counter(next, counter.saturating_add(1));
+            match atomic_compare_exchange_weak(self.p.get(), prev, next, set_order, fetch_order) {
+                Ok(x) => return Ok(erase_counter(x)),
+                Err(next_prev) => {
+                    prev = next_prev;
+                    counter = take_counter(next_prev);
+                },
             }
         }
         Err(prev)
