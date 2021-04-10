@@ -10,3 +10,4 @@ edition = "2018"
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 smallvec = "1.6"
 cache-padded = "1.1"
+bit_field = "0.10"

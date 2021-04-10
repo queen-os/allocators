@@ -1,6 +1,6 @@
 use core::{
     cell::UnsafeCell,
-    intrinsics,
+    fmt, intrinsics,
     sync::atomic::Ordering::{self, *},
 };
 
@@ -21,11 +21,87 @@ impl<T> Default for AtomicPtr<T> {
     }
 }
 
+/// Compound pointer with 16-bit tid and the 48-bit real address.
+#[derive(PartialEq, Eq)]
+pub struct CompoundPtr<T>(*mut T);
+
+impl<T> Clone for CompoundPtr<T> {
+    fn clone(&self) -> Self {
+        CompoundPtr(self.0)
+    }
+}
+
+impl<T> Copy for CompoundPtr<T> {}
+
+impl<T> Default for CompoundPtr<T> {
+    fn default() -> Self {
+        Self::new(core::ptr::null_mut())
+    }
+}
+
+impl<T> fmt::Debug for CompoundPtr<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Pointer::fmt(&self.as_ptr(), f)
+    }
+}
+
+impl<T> CompoundPtr<T> {
+    #[inline]
+    pub fn new(ptr: *mut T) -> Self {
+        CompoundPtr(with_tid(ptr, 0))
+    }
+
+    #[inline]
+    pub fn with_tid(ptr: *mut T, tid: u16) -> Self {
+        CompoundPtr(with_tid(ptr, tid))
+    }
+
+    #[inline]
+    pub fn new_next(self, ptr: *mut T) -> Self {
+        CompoundPtr(with_tid(ptr, self.tid() + 1))
+    }
+
+    #[inline]
+    pub fn as_ptr(self) -> *mut T {
+        erase_tid(self.0)
+    }
+
+    #[inline]
+    pub unsafe fn as_ref<'a>(self) -> Option<&'a T> {
+        self.as_ptr().as_ref()
+    }
+
+    #[inline]
+    pub unsafe fn as_mut<'a>(self) -> Option<&'a mut T> {
+        self.as_ptr().as_mut()
+    }
+
+    #[inline]
+    pub fn is_null(self) -> bool {
+        self.as_ptr().is_null()
+    }
+
+    #[inline]
+    pub fn tid(self) -> u16 {
+        take_tid(self.0)
+    }
+
+    #[inline]
+    pub fn increase_tid(&mut self) {
+        *self = CompoundPtr::with_tid(self.as_ptr(), self.tid() + 1);
+    }
+
+    #[inline]
+    pub fn inner(self) -> *mut T {
+        self.0
+    }
+}
+
 impl<T> AtomicPtr<T> {
     #[inline]
     pub fn new(ptr: *mut T) -> Self {
         Self {
-            p: UnsafeCell::new(with_counter(ptr, 0)),
+            p: UnsafeCell::new(with_tid(ptr, 0)),
         }
     }
 
@@ -38,8 +114,8 @@ impl<T> AtomicPtr<T> {
     ///
     /// Panics if `order` is [`Release`] or [`AcqRel`].
     #[inline]
-    pub fn load(&self, order: Ordering) -> *mut T {
-        erase_counter(atomic_load(self.p.get(), order))
+    pub fn load(&self, order: Ordering) -> CompoundPtr<T> {
+        CompoundPtr(atomic_load(self.p.get(), order))
     }
 
     /// Stores a value into the pointer.
@@ -51,8 +127,8 @@ impl<T> AtomicPtr<T> {
     ///
     /// Panics if `order` is [`Acquire`] or [`AcqRel`].
     #[inline]
-    pub fn store(&self, ptr: *mut T, order: Ordering) {
-        atomic_store(self.p.get(), with_counter(ptr, 0), order);
+    pub fn store(&self, ptr: CompoundPtr<T>, order: Ordering) {
+        atomic_store(self.p.get(), ptr.inner(), order);
     }
 
     /// Stores a value into the pointer, returning the previous value.
@@ -65,8 +141,8 @@ impl<T> AtomicPtr<T> {
     /// **Note:** This method is only available on platforms that support atomic
     /// operations on pointers.
     #[inline]
-    pub fn swap(&self, ptr: *mut T, order: Ordering) -> *mut T {
-        erase_counter(atomic_swap(self.p.get(), with_counter(ptr, 0), order))
+    pub fn swap(&self, ptr: CompoundPtr<T>, order: Ordering) -> CompoundPtr<T> {
+        CompoundPtr(atomic_swap(self.p.get(), ptr.inner(), order))
     }
 
     /// Stores a value into the pointer if the current value is the same as the `current` value.
@@ -87,18 +163,15 @@ impl<T> AtomicPtr<T> {
     /// operations on pointers.
     pub fn compare_exchange(
         &self,
-        current: *mut T,
-        new: *mut T,
+        current: CompoundPtr<T>,
+        new: CompoundPtr<T>,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<*mut T, *mut T> {
-        let counter = take_counter(atomic_load(self.p.get(), Acquire));
-        let current = with_counter(current, counter);
-        let new = with_counter(new, counter.saturating_add(1));
-
-        match atomic_compare_exchange(self.p.get(), current, new, success, failure) {
-            Ok(ptr) => Ok(erase_counter(ptr)),
-            Err(ptr) => Err(erase_counter(ptr)),
+    ) -> Result<CompoundPtr<T>, CompoundPtr<T>> {
+        match atomic_compare_exchange(self.p.get(), current.inner(), new.inner(), success, failure)
+        {
+            Ok(ptr) => Ok(CompoundPtr(ptr)),
+            Err(ptr) => Err(CompoundPtr(ptr)),
         }
     }
 
@@ -122,18 +195,20 @@ impl<T> AtomicPtr<T> {
     /// operations on pointers.
     pub fn compare_exchange_weak(
         &self,
-        current: *mut T,
-        new: *mut T,
+        current: CompoundPtr<T>,
+        new: CompoundPtr<T>,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<*mut T, *mut T> {
-        let counter = take_counter(atomic_load(self.p.get(), Acquire));
-        let current = with_counter(current, counter);
-        let new = with_counter(new, counter.saturating_add(1));
-
-        match atomic_compare_exchange_weak(self.p.get(), current, new, success, failure) {
-            Ok(ptr) => Ok(erase_counter(ptr)),
-            Err(ptr) => Err(erase_counter(ptr)),
+    ) -> Result<CompoundPtr<T>, CompoundPtr<T>> {
+        match atomic_compare_exchange_weak(
+            self.p.get(),
+            current.inner(),
+            new.inner(),
+            success,
+            failure,
+        ) {
+            Ok(ptr) => Ok(CompoundPtr(ptr)),
+            Err(ptr) => Err(CompoundPtr(ptr)),
         }
     }
 
@@ -170,41 +245,36 @@ impl<T> AtomicPtr<T> {
     where
         F: FnMut(*mut T) -> Option<*mut T>,
     {
-        let mut prev = atomic_load(self.p.get(), fetch_order);
-        let mut counter = take_counter(prev);
-        while let Some(next) = f(erase_counter(prev)) {
-            let next = with_counter(next, counter.saturating_add(1));
-            match atomic_compare_exchange_weak(self.p.get(), prev, next, set_order, fetch_order) {
-                Ok(x) => return Ok(erase_counter(x)),
-                Err(next_prev) => {
-                    prev = next_prev;
-                    counter = take_counter(next_prev);
-                },
+        let mut prev = self.load(fetch_order);
+        while let Some(next) = f(prev.as_ptr()) {
+            match self.compare_exchange_weak(prev, prev.new_next(next), set_order, fetch_order) {
+                Ok(x) => return Ok(x.as_ptr()),
+                Err(next_prev) => prev = next_prev,
             }
         }
-        Err(prev)
+        Err(prev.as_ptr())
     }
 }
 
 #[inline]
-fn with_counter<T>(ptr: *mut T, counter: u16) -> *mut T {
-    ((ptr as usize & !UPPER_BITS) | ((counter as usize) << UPPER_SHIFT)) as *mut _
+fn with_tid<T>(ptr: *mut T, tid: u16) -> *mut T {
+    ((ptr as usize & !UPPER_BITS) | ((tid as usize) << UPPER_SHIFT)) as *mut _
 }
 
 #[inline]
-fn take_counter<T>(ptr: *mut T) -> u16 {
+fn take_tid<T>(ptr: *mut T) -> u16 {
     (ptr as usize & UPPER_BITS >> UPPER_SHIFT) as u16
 }
 
 #[inline]
 #[cfg(not(test))]
-fn erase_counter<T>(ptr: *mut T) -> *mut T {
+fn erase_tid<T>(ptr: *mut T) -> *mut T {
     (ptr as usize | UPPER_BITS) as *mut _
 }
 
 #[inline]
 #[cfg(test)]
-fn erase_counter<T>(ptr: *mut T) -> *mut T {
+fn erase_tid<T>(ptr: *mut T) -> *mut T {
     (ptr as usize & !UPPER_BITS) as *mut _
 }
 
