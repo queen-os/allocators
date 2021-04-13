@@ -87,7 +87,7 @@ impl<T> CompoundPtr<T> {
     }
 
     #[inline]
-    pub fn increase_tid(&mut self) {
+    pub fn increment_tid(&mut self) {
         *self = CompoundPtr::with_tid(self.as_ptr(), self.tid() + 1);
     }
 
