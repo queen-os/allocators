@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, collections::BTreeMap};
+use atomic_stamped_ptr::AtomicStampedPtr;
 use bit_field::BitField;
 use cache_padded::CachePadded;
 use core::{
@@ -8,9 +9,6 @@ use core::{
 };
 use smallvec::{smallvec, SmallVec};
 use spin::{Mutex, RwLock};
-
-mod atomic;
-use atomic::AtomicPtr;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -39,14 +37,14 @@ pub struct MemCache<Utils: MemCacheUtils> {
 }
 
 struct MemCacheCpu {
-    freelist: AtomicPtr<FreeObject>,
+    freelist: AtomicStampedPtr<FreeObject>,
     slab: UnsafeCell<Option<NonNull<Slab>>>,
 }
 
 impl MemCacheCpu {
     fn new() -> Self {
         Self {
-            freelist: AtomicPtr::new(null_mut()),
+            freelist: AtomicStampedPtr::new(null_mut()),
             slab: UnsafeCell::new(None),
         }
     }
@@ -259,7 +257,7 @@ unsafe impl<T: MemCacheUtils> Sync for MemCache<T> {}
 
 pub struct Slab {
     page_start: NonNull<u8>,
-    freelist: AtomicPtr<FreeObject>,
+    freelist: AtomicStampedPtr<FreeObject>,
     /// inuse: `0..32`, objects: `32..63`, frozen(in `cache_cpu`): `63..64`
     flags: AtomicUsize,
     prev_slab: Option<NonNull<Slab>>,
@@ -297,7 +295,7 @@ impl Slab {
 
         Self {
             page_start,
-            freelist: AtomicPtr::new(page_start.as_ptr().cast()),
+            freelist: AtomicStampedPtr::new(page_start.as_ptr().cast()),
             flags: AtomicUsize::new(*0.set_bits(32..63, objects)),
             prev_slab: None,
             next_slab: None,
