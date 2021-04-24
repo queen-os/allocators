@@ -510,6 +510,9 @@ pub mod bench {
         thread::spawn,
         time::{Duration, Instant},
     };
+    use spin::Lazy;
+    use threadpool::ThreadPool;
+
     #[derive(Debug, Default, Clone)]
     pub struct ThreadedMemCacheUtils {}
 
@@ -558,14 +561,16 @@ pub mod bench {
         start: Arc<Barrier>,
         end: Arc<Barrier>,
         slab: Arc<T>,
+        pool: Arc<ThreadPool>,
     }
 
     impl<T: Send + Sync + 'static> MultiThreadedBench<T> {
-        pub fn new(slab: Arc<T>) -> Self {
+        pub fn new(slab: Arc<T>, pool: Arc<ThreadPool>) -> Self {
             Self {
                 start: Arc::new(Barrier::new(5)),
                 end: Arc::new(Barrier::new(5)),
                 slab,
+                pool,
             }
         }
 
@@ -573,7 +578,7 @@ pub mod bench {
             let start = self.start.clone();
             let end = self.end.clone();
             let slab = self.slab.clone();
-            spawn(move || {
+            self.pool.execute(move || {
                 f(&*start, &*slab);
                 end.wait();
             });

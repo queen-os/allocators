@@ -23,6 +23,7 @@ fn dummy_mem_cache(cpu_count: usize) -> MemCache<ThreadedMemCacheUtils> {
 fn insert_remove_local(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_remove_local");
     let g = group.measurement_time(Duration::from_secs(5));
+    let pool = Arc::new(threadpool::ThreadPool::new(4));
 
     for objects in N_INSERTIONS {
         g.bench_with_input(
@@ -33,7 +34,7 @@ fn insert_remove_local(c: &mut Criterion) {
                 b.iter_custom(|iters| {
                     let mut total = Duration::from_secs(0);
                     for _ in 0..iters {
-                        let bench = MultiThreadedBench::new(my_slab.clone());
+                        let bench = MultiThreadedBench::new(my_slab.clone(), pool.clone());
                         let elapsed = bench
                             .thread(move |start, slab| {
                                 start.wait();
@@ -86,27 +87,35 @@ fn insert_remove_local(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let mut total = Duration::from_secs(0);
                 for _ in 0..iters {
-                    let bench = MultiThreadedBench::new(Arc::new(()));
+                    let bench = MultiThreadedBench::new(Arc::new(()), pool.clone());
                     let elapsed = bench
                         .thread(move |start, _| {
                             start.wait();
-                            let _v: Vec<_> =
-                                (0..objects).map(|_| Box::new(Foo::default())).collect();
+                            for _ in 0..(objects / 100 + 1) {
+                                let _v: Vec<_> =
+                                    (0..100).map(|_| Box::new(Foo::default())).collect();
+                            }
                         })
                         .thread(move |start, _| {
                             start.wait();
-                            let _v: Vec<_> =
-                                (0..objects).map(|_| Box::new(Foo::default())).collect();
+                            for _ in 0..(objects / 100 + 1) {
+                                let _v: Vec<_> =
+                                    (0..100).map(|_| Box::new(Foo::default())).collect();
+                            }
                         })
                         .thread(move |start, _| {
                             start.wait();
-                            let _v: Vec<_> =
-                                (0..objects).map(|_| Box::new(Foo::default())).collect();
+                            for _ in 0..(objects / 100 + 1) {
+                                let _v: Vec<_> =
+                                    (0..100).map(|_| Box::new(Foo::default())).collect();
+                            }
                         })
                         .thread(move |start, _| {
                             start.wait();
-                            let _v: Vec<_> =
-                                (0..objects).map(|_| Box::new(Foo::default())).collect();
+                            for _ in 0..(objects / 100 + 1) {
+                                let _v: Vec<_> =
+                                    (0..100).map(|_| Box::new(Foo::default())).collect();
+                            }
                         })
                         .run();
                     total += elapsed;
@@ -114,6 +123,7 @@ fn insert_remove_local(c: &mut Criterion) {
                 total
             })
         });
+        let slab = Arc::new(sharded_slab::Slab::new());
         g.bench_with_input(
             BenchmarkId::new("sharded_slab", objects),
             objects,
@@ -121,42 +131,50 @@ fn insert_remove_local(c: &mut Criterion) {
                 b.iter_custom(|iters| {
                     let mut total = Duration::from_secs(0);
                     for _ in 0..iters {
-                        let bench = MultiThreadedBench::new(Arc::new(sharded_slab::Slab::new()));
+                        let bench = MultiThreadedBench::new(slab.clone(), pool.clone());
                         let elapsed = bench
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..objects)
-                                    .map(|_| slab.insert(Foo::default()).unwrap())
-                                    .collect();
-                                for i in v {
-                                    slab.remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.insert(Foo::default()).unwrap())
+                                        .collect();
+                                    for i in v {
+                                        slab.remove(i);
+                                    }
                                 }
                             })
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..objects)
-                                    .map(|_| slab.insert(Foo::default()).unwrap())
-                                    .collect();
-                                for i in v {
-                                    slab.remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.insert(Foo::default()).unwrap())
+                                        .collect();
+                                    for i in v {
+                                        slab.remove(i);
+                                    }
                                 }
                             })
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..objects)
-                                    .map(|_| slab.insert(Foo::default()).unwrap())
-                                    .collect();
-                                for i in v {
-                                    slab.remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.insert(Foo::default()).unwrap())
+                                        .collect();
+                                    for i in v {
+                                        slab.remove(i);
+                                    }
                                 }
                             })
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..objects)
-                                    .map(|_| slab.insert(Foo::default()).unwrap())
-                                    .collect();
-                                for i in v {
-                                    slab.remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.insert(Foo::default()).unwrap())
+                                        .collect();
+                                    for i in v {
+                                        slab.remove(i);
+                                    }
                                 }
                             })
                             .run();
@@ -172,45 +190,54 @@ fn insert_remove_local(c: &mut Criterion) {
             |b, &objects| {
                 b.iter_custom(|iters| {
                     let mut total = Duration::from_secs(0);
-                    let i = objects;
                     for _ in 0..iters {
-                        let bench =
-                            MultiThreadedBench::new(Arc::new(RwLock::new(slab::Slab::new())));
+                        let bench = MultiThreadedBench::new(
+                            Arc::new(RwLock::new(slab::Slab::new())),
+                            pool.clone(),
+                        );
                         let elapsed = bench
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..i)
-                                    .map(|_| slab.write().insert(Foo::default()))
-                                    .collect();
-                                for i in v {
-                                    slab.write().remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.write().insert(Foo::default()))
+                                        .collect();
+                                    for i in v {
+                                        slab.write().remove(i);
+                                    }
                                 }
                             })
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..i)
-                                    .map(|_| slab.write().insert(Foo::default()))
-                                    .collect();
-                                for i in v {
-                                    slab.write().remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.write().insert(Foo::default()))
+                                        .collect();
+                                    for i in v {
+                                        slab.write().remove(i);
+                                    }
                                 }
                             })
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..i)
-                                    .map(|_| slab.write().insert(Foo::default()))
-                                    .collect();
-                                for i in v {
-                                    slab.write().remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.write().insert(Foo::default()))
+                                        .collect();
+                                    for i in v {
+                                        slab.write().remove(i);
+                                    }
                                 }
                             })
                             .thread(move |start, slab| {
                                 start.wait();
-                                let v: Vec<_> = (0..i)
-                                    .map(|_| slab.write().insert(Foo::default()))
-                                    .collect();
-                                for i in v {
-                                    slab.write().remove(i);
+                                for _ in 0..(objects / 100 + 1) {
+                                    let v: Vec<_> = (0..100)
+                                        .map(|_| slab.write().insert(Foo::default()))
+                                        .collect();
+                                    for i in v {
+                                        slab.write().remove(i);
+                                    }
                                 }
                             })
                             .run();

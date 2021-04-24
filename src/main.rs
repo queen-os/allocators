@@ -12,13 +12,14 @@ fn dummy_mem_cache(cpu_count: usize) -> MemCache<ThreadedMemCacheUtils> {
 
 fn main() {
     let my_slab = Arc::new(dummy_mem_cache(8));
-    let bench = MultiThreadedBench::new(my_slab);
-    let objects = 100000;
+    let pool = Arc::new(threadpool::ThreadPool::new(4));
+    let bench = MultiThreadedBench::new(my_slab, pool);
+    let objects = 100;
     let elapsed = bench
         .thread(move |start, slab| {
             start.wait();
-            for _ in 0..(objects / 1000 + 1) {
-                let v: Vec<_> = (0..1000).map(|_| unsafe { slab.allocate() }).collect();
+            for _ in 0..(objects / 100 + 1) {
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
                 for obj in v {
                     unsafe { slab.deallocate(obj) }
                 }
@@ -26,8 +27,8 @@ fn main() {
         })
         .thread(move |start, slab| {
             start.wait();
-            for _ in 0..(objects / 1000 + 1) {
-                let v: Vec<_> = (0..1000).map(|_| unsafe { slab.allocate() }).collect();
+            for _ in 0..(objects / 100 + 1) {
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
                 for obj in v {
                     unsafe { slab.deallocate(obj) }
                 }
@@ -35,8 +36,8 @@ fn main() {
         })
         .thread(move |start, slab| {
             start.wait();
-            for _ in 0..(objects / 1000 + 1) {
-                let v: Vec<_> = (0..1000).map(|_| unsafe { slab.allocate() }).collect();
+            for _ in 0..(objects / 100 + 1) {
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
                 for obj in v {
                     unsafe { slab.deallocate(obj) }
                 }
@@ -44,8 +45,8 @@ fn main() {
         })
         .thread(move |start, slab| {
             start.wait();
-            for _ in 0..(objects / 1000 + 1) {
-                let v: Vec<_> = (0..1000).map(|_| unsafe { slab.allocate() }).collect();
+            for _ in 0..(objects / 100 + 1) {
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
                 for obj in v {
                     unsafe { slab.deallocate(obj) }
                 }
