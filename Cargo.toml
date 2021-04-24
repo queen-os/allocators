@@ -6,9 +6,19 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bench]]
+name = "slab-bench"
+harness = false
+
 [dependencies]
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "rwlock"] }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "lazy"] }
 smallvec = "1.6"
 cache-padded = "1.1"
-bit_field = "0.10"
 atomic-stamped-ptr = { path = "../atomic-stamped-ptr" }
+dashmap = { version = "3.11", features = ["no_std"] }
+
+
+[dev-dependencies]
+criterion = "0.3"
+slab = { version = "0.4", default-features = false }
+sharded-slab = "0.1"

@@ -2,12 +2,13 @@ use alloc::collections::BTreeSet;
 use core::{
     cmp::min,
     ops::{Deref, Range},
+    mem
 };
 use spin::Mutex;
 
 #[inline]
 fn prev_power_of_two(num: usize) -> usize {
-    1 << (8 * (core::mem::size_of::<usize>()) - num.leading_zeros() as usize - 1)
+    1 << (8 * (mem::size_of::<usize>()) - num.leading_zeros() as usize - 1)
 }
 
 /// A frame allocator using buddy system.

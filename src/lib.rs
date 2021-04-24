@@ -1,7 +1,6 @@
-#![cfg_attr(not(test), no_std)]
-#![feature(core_intrinsics)]
 
 extern crate alloc;
+extern crate core;
 
 pub mod frame;
 pub mod heap;
