@@ -14,7 +14,7 @@ fn main() {
     let my_slab = Arc::new(dummy_mem_cache(8));
     let pool = Arc::new(threadpool::ThreadPool::new(4));
     let bench = MultiThreadedBench::new(my_slab, pool);
-    let objects = 100;
+    let objects = 10000;
     let elapsed = bench
         .thread(move |start, slab| {
             start.wait();

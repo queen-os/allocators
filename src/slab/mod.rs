@@ -9,8 +9,8 @@ use dashmap::DashMap;
 use smallvec::SmallVec;
 use spin::Mutex;
 
-// #[cfg(test)]
-pub mod tid;
+#[cfg(any(test, feature = "bench"))]
+mod tid;
 
 pub const PAGE_SIZE: usize = 4096;
 
@@ -272,7 +272,7 @@ unsafe impl<T: MemCacheUtils> Sync for MemCache<T> {}
 pub struct Slab {
     page_start: NonNull<u8>,
     freelist: AtomicPtr<FreeObject>,
-    /// inuse: `0..32`, objects: `32..63`, frozen(in `cache_cpu`): `63..64`
+    /// [`SlabFlags`]
     flags: AtomicUsize,
     prev_slab: Option<NonNull<Slab>>,
     next_slab: Option<NonNull<Slab>>,
@@ -315,6 +315,7 @@ impl SlabFlags {
         self.0 & Self::OBJECTS_BITMASK >> Self::OBJECTS_SHIFT
     }
 
+    #[allow(unused)]
     #[inline]
     const fn set_objects(self, objects: usize) -> Self {
         Self(self.0 & !Self::OBJECTS_BITMASK | (objects << Self::OBJECTS_SHIFT))
@@ -374,6 +375,7 @@ impl Slab {
         }
     }
 
+    #[allow(unused)]
     #[inline]
     fn is_full(&self) -> bool {
         let flags = SlabFlags(self.flags.load(Acquire));
@@ -502,15 +504,14 @@ impl<T> AsPtr<T> for Option<NonNull<T>> {
     }
 }
 
+#[cfg(any(test, feature = "bench"))]
 pub mod bench {
     use super::*;
     use std::{
         alloc::Layout,
         sync::{Arc, Barrier},
-        thread::spawn,
         time::{Duration, Instant},
     };
-    use spin::Lazy;
     use threadpool::ThreadPool;
 
     #[derive(Debug, Default, Clone)]
@@ -596,9 +597,9 @@ pub mod bench {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, thread::spawn};
-
     use super::{bench::*, *};
+    use std::sync::Arc;
+    use threadpool::ThreadPool;
 
     fn dummy_mem_cache(cpu_count: usize) -> MemCache<ThreadedMemCacheUtils> {
         let utils = ThreadedMemCacheUtils::new();
@@ -607,20 +608,9 @@ mod tests {
 
     #[test]
     fn usages() {
-        let cpu_count = 8;
-        let mem_cache = Arc::new(dummy_mem_cache(8));
-        let threads: Vec<_> = (0..cpu_count)
-            .into_iter()
-            .map(|_| {
-                let mem_cache = mem_cache.clone();
-                spawn(move || unsafe {
-                    let object = mem_cache.allocate();
-                    mem_cache.deallocate(object);
-                })
-            })
-            .collect();
-        for t in threads {
-            t.join().unwrap();
-        }
+        let slab = Arc::new(dummy_mem_cache(8));
+        let pool = Arc::new(ThreadPool::new(4));
+        let bench = MultiThreadedBench::new(slab, pool);
+        bench.run();
     }
 }
