@@ -9,6 +9,7 @@ edition = "2018"
 [features]
 default = []
 bench = ["threadpool"]
+slab-allocator = ["dashmap"]
 
 [[bin]]
 name = "slab-run"
@@ -24,7 +25,7 @@ spin = { version = "0.9", default-features = false, features = ["mutex", "spin_m
 smallvec = "1.6"
 cache-padded = "1.1"
 atomic-stamped-ptr = { path = "../atomic-stamped-ptr" }
-dashmap = { version = "3.11", features = ["no_std"] }
+dashmap = { version = "4.0", optional = true }
 threadpool = { version = "1.8", optional = true }
 
 [dev-dependencies]
