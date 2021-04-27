@@ -1,5 +1,5 @@
 use allocators::slab::{
-    bench::{MultiThreadedBench, ThreadedMemCacheUtils},
+    std_impl::{MultiThreadedBench, StdMemCacheUtils},
     MemCache,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -15,8 +15,8 @@ struct Foo {
 }
 
 #[inline]
-fn dummy_mem_cache(cpu_count: usize) -> MemCache<ThreadedMemCacheUtils> {
-    let utils = ThreadedMemCacheUtils::new();
+fn dummy_mem_cache(cpu_count: usize) -> MemCache<StdMemCacheUtils> {
+    let utils = StdMemCacheUtils::new(10240);
     MemCache::new(cpu_count, 16, 16, 32, utils)
 }
 

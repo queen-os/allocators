@@ -5,20 +5,22 @@ use core::{
     ptr::{null_mut, NonNull},
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*},
 };
-use dashmap::DashMap;
 use smallvec::SmallVec;
 use spin::Mutex;
 
-#[cfg(any(test, feature = "bench"))]
-mod tid;
+#[cfg(any(test, feature = "with_std"))]
+mod std_impl;
 
 pub const PAGE_SIZE: usize = 4096;
 
-pub trait MemCacheUtils: Send + Sync {
+pub trait MemCacheUtils {
     type PreemptGuard;
 
     fn allocate_pages(&self, pages: usize) -> NonNull<u8>;
     fn deallocate_pages(&self, page_start: NonNull<u8>, pages: usize);
+
+    fn set_pages_slab(&self, page_start: NonNull<u8>, pages: usize, slab: NonNull<u8>);
+    fn find_slab_by_page(&self, page_start: NonNull<u8>) -> NonNull<u8>;
 
     fn cpu_id(&self) -> usize;
 
@@ -34,7 +36,6 @@ pub struct MemCache<Utils: MemCacheUtils> {
     pages: usize,
     max_partial: usize,
     partial: Mutex<SlabList>,
-    slab_map: DashMap<usize, NonNull<Slab>>,
     utils: Utils,
 }
 
@@ -119,7 +120,6 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
             pages,
             max_partial,
             partial: Mutex::new(SlabList::new()),
-            slab_map: Default::default(),
             utils,
         }
     }
@@ -209,10 +209,8 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
         let page_start = self.utils.allocate_pages(self.pages);
         let slab = Box::new(Slab::new(page_start, self.pages, self.size));
         let slab = unsafe { NonNull::new_unchecked(Box::leak(slab)) };
-        // preempt disabled
-        for page in (0..self.pages).map(|i| page_start.as_ptr() as usize + i * PAGE_SIZE) {
-            self.slab_map.insert(page, slab);
-        }
+        self.utils
+            .set_pages_slab(page_start, self.pages, slab.cast());
 
         slab
     }
@@ -221,17 +219,13 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
     fn discard_slab(&self, slab: NonNull<Slab>) {
         let slab = unsafe { Box::from_raw(slab.as_ptr()) };
         self.utils.deallocate_pages(slab.page_start, self.pages);
-        // preempt disabled
-        for page in (0..self.pages).map(|i| slab.page_start.as_ptr() as usize + i * PAGE_SIZE) {
-            self.slab_map.remove(&page);
-        }
     }
 
     #[inline]
     fn find_slab(&self, object: NonNull<u8>) -> NonNull<Slab> {
-        let page = align_down(object.as_ptr() as usize, PAGE_SIZE);
-        let _preempt_guard = self.utils.preempt_disable();
-        *self.slab_map.get(&page).unwrap().value()
+        let page_start =
+            unsafe { NonNull::new_unchecked(align_down(object.as_ptr() as usize, PAGE_SIZE) as _) };
+        self.utils.find_slab_by_page(page_start).cast()
     }
 }
 
@@ -504,113 +498,53 @@ impl<T> AsPtr<T> for Option<NonNull<T>> {
     }
 }
 
-#[cfg(any(test, feature = "bench"))]
-pub mod bench {
-    use super::*;
-    use std::{
-        alloc::Layout,
-        sync::{Arc, Barrier},
-        time::{Duration, Instant},
-    };
-    use threadpool::ThreadPool;
-
-    #[derive(Debug, Default, Clone)]
-    pub struct ThreadedMemCacheUtils {}
-
-    impl ThreadedMemCacheUtils {
-        #[inline]
-        pub fn new() -> Self {
-            Self {}
-        }
-    }
-
-    impl MemCacheUtils for ThreadedMemCacheUtils {
-        type PreemptGuard = ();
-
-        #[inline]
-        fn allocate_pages(&self, pages: usize) -> NonNull<u8> {
-            unsafe {
-                let ptr = std::alloc::alloc(Layout::from_size_align_unchecked(
-                    pages * PAGE_SIZE,
-                    PAGE_SIZE,
-                ));
-                NonNull::new_unchecked(ptr)
-            }
-        }
-
-        #[inline]
-        fn deallocate_pages(&self, page_start: NonNull<u8>, pages: usize) {
-            unsafe {
-                std::alloc::dealloc(
-                    page_start.as_ptr(),
-                    Layout::from_size_align_unchecked(pages * PAGE_SIZE, PAGE_SIZE),
-                );
-            }
-        }
-
-        #[inline]
-        fn cpu_id(&self) -> usize {
-            tid::Tid::current().as_usize() % 4
-        }
-
-        #[inline]
-        fn preempt_disable(&self) -> Self::PreemptGuard {}
-    }
-
-    #[derive(Clone)]
-    pub struct MultiThreadedBench<T> {
-        start: Arc<Barrier>,
-        end: Arc<Barrier>,
-        slab: Arc<T>,
-        pool: Arc<ThreadPool>,
-    }
-
-    impl<T: Send + Sync + 'static> MultiThreadedBench<T> {
-        pub fn new(slab: Arc<T>, pool: Arc<ThreadPool>) -> Self {
-            Self {
-                start: Arc::new(Barrier::new(5)),
-                end: Arc::new(Barrier::new(5)),
-                slab,
-                pool,
-            }
-        }
-
-        pub fn thread(&self, f: impl FnOnce(&Barrier, &T) + Send + 'static) -> &Self {
-            let start = self.start.clone();
-            let end = self.end.clone();
-            let slab = self.slab.clone();
-            self.pool.execute(move || {
-                f(&*start, &*slab);
-                end.wait();
-            });
-            self
-        }
-
-        pub fn run(&self) -> Duration {
-            self.start.wait();
-            let t0 = Instant::now();
-            self.end.wait();
-            t0.elapsed()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{bench::*, *};
+    use super::{std_impl::*, *};
     use std::sync::Arc;
     use threadpool::ThreadPool;
 
-    fn dummy_mem_cache(cpu_count: usize) -> MemCache<ThreadedMemCacheUtils> {
-        let utils = ThreadedMemCacheUtils::new();
+    #[inline]
+    fn mem_cache(cpu_count: usize) -> MemCache<StdMemCacheUtils> {
+        let utils = StdMemCacheUtils::new(1024);
         MemCache::new(cpu_count, 16, 4, 8, utils)
     }
 
     #[test]
     fn usages() {
-        let slab = Arc::new(dummy_mem_cache(8));
+        let slab = Arc::new(mem_cache(8));
         let pool = Arc::new(ThreadPool::new(4));
         let bench = MultiThreadedBench::new(slab, pool);
-        bench.run();
+        let elapsed = bench
+            .thread(move |start, slab| {
+                start.wait();
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
+                for obj in v {
+                    unsafe { slab.deallocate(obj) }
+                }
+            })
+            .thread(move |start, slab| {
+                start.wait();
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
+                for obj in v {
+                    unsafe { slab.deallocate(obj) }
+                }
+            })
+            .thread(move |start, slab| {
+                start.wait();
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
+                for obj in v {
+                    unsafe { slab.deallocate(obj) }
+                }
+            })
+            .thread(move |start, slab| {
+                start.wait();
+                let v: Vec<_> = (0..100).map(|_| unsafe { slab.allocate() }).collect();
+                for obj in v {
+                    unsafe { slab.deallocate(obj) }
+                }
+            })
+            .run();
+        println!("run {}us", elapsed.as_micros());
     }
 }

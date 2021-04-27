@@ -5,5 +5,4 @@ extern crate core;
 
 pub mod frame;
 pub mod heap;
-#[cfg(feature="slab-allocator")]
 pub mod slab;
