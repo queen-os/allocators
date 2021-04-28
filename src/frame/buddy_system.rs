@@ -1,8 +1,8 @@
-use alloc::collections::BTreeSet;
+use alloc::{collections::BTreeSet, sync::Arc};
 use core::{
     cmp::min,
+    mem,
     ops::{Deref, Range},
-    mem
 };
 use spin::Mutex;
 
@@ -111,8 +111,8 @@ impl FrameAlloc {
 }
 
 /// A locked version of [`FrameAlloc`]
-#[derive(Debug, Default)]
-pub struct LockedFrameAlloc(Mutex<FrameAlloc>);
+#[derive(Debug, Default, Clone)]
+pub struct LockedFrameAlloc(Arc<Mutex<FrameAlloc>>);
 
 impl LockedFrameAlloc {
     /// Creates an empty heap
