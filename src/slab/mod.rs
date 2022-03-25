@@ -9,11 +9,11 @@ use smallvec::SmallVec;
 use spin::Mutex;
 
 #[cfg(any(test, feature = "with_std"))]
-mod std_impl;
+pub mod std_impl;
 
 pub const PAGE_SIZE: usize = 4096;
 
-pub trait MemCacheUtils {
+pub trait Env {
     type PreemptGuard;
 
     fn allocate_pages(&self, pages: usize) -> NonNull<u8>;
@@ -28,7 +28,7 @@ pub trait MemCacheUtils {
     fn preempt_disable(&self) -> Self::PreemptGuard;
 }
 
-pub struct MemCache<Utils: MemCacheUtils> {
+pub struct MemCache<E: Env> {
     cpu_slabs: SmallVec<[CachePadded<UnsafeCell<MemCacheCpu>>; 8]>,
     /// The size of an object including meta data
     size: usize,
@@ -36,7 +36,7 @@ pub struct MemCache<Utils: MemCacheUtils> {
     pages: usize,
     max_partial: usize,
     partial: Mutex<SlabList>,
-    utils: Utils,
+    env: E,
 }
 
 struct MemCacheCpu {
@@ -99,13 +99,13 @@ impl MemCacheCpu {
     }
 }
 
-impl<Utils: MemCacheUtils> MemCache<Utils> {
+impl<E: Env> MemCache<E> {
     pub fn new(
         cpu_count: usize,
         size: usize,
         pages: usize,
         max_partial: usize,
-        utils: Utils,
+        env: E,
     ) -> Self {
         assert!(size >= 8);
 
@@ -120,7 +120,7 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
             pages,
             max_partial,
             partial: Mutex::new(SlabList::new()),
-            utils,
+            env,
         }
     }
 
@@ -128,7 +128,7 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
     /// # Safety
     pub unsafe fn allocate(&self) -> NonNull<u8> {
         let mut object: Option<NonNull<FreeObject>>;
-        let mut cache_cpu = NonNull::new_unchecked(self.cpu_slabs[self.utils.cpu_id()].get());
+        let mut cache_cpu = NonNull::new_unchecked(self.cpu_slabs[self.env.cpu_id()].get());
 
         loop {
             // fast path
@@ -137,7 +137,7 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
                 break;
             }
 
-            let _preempt_guard = self.utils.preempt_disable();
+            let _preempt_guard = self.env.preempt_disable();
             // preemption disabled, it's safe to use a mutable reference.
             let cache_cpu = cache_cpu.as_mut();
 
@@ -169,7 +169,7 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
     ///
     /// # Safety
     pub unsafe fn deallocate(&self, object: NonNull<u8>) {
-        let mut cache_cpu = NonNull::new_unchecked(self.cpu_slabs[self.utils.cpu_id()].get());
+        let mut cache_cpu = NonNull::new_unchecked(self.cpu_slabs[self.env.cpu_id()].get());
         let slab_ptr = self.find_slab(object);
         let slab = slab_ptr.as_ref();
         let mut object = object.cast::<FreeObject>();
@@ -190,11 +190,11 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
 
         let (was_full, is_empty) = slab.push_object(object);
         if was_full {
-            let _preempt_guard = self.utils.preempt_disable();
+            let _preempt_guard = self.env.preempt_disable();
             cache_cpu.as_mut().partial.push(slab_ptr);
             // TODO: move to global partial
         } else if is_empty {
-            let _preempt_guard = self.utils.preempt_disable();
+            let _preempt_guard = self.env.preempt_disable();
             let mut partial = self.partial.lock();
             // check again
             if partial.len() >= self.max_partial && slab.is_empty() {
@@ -204,48 +204,46 @@ impl<Utils: MemCacheUtils> MemCache<Utils> {
         }
     }
 
-    #[inline]
     fn new_slab(&self) -> NonNull<Slab> {
-        let page_start = self.utils.allocate_pages(self.pages);
+        let page_start = self.env.allocate_pages(self.pages);
         let slab = Box::new(Slab::new(page_start, self.pages, self.size));
         let slab = unsafe { NonNull::new_unchecked(Box::leak(slab)) };
-        self.utils
+        self.env
             .set_pages_slab(page_start, self.pages, slab.cast());
 
         slab
     }
 
-    #[inline]
     fn discard_slab(&self, slab: NonNull<Slab>) {
         let slab = unsafe { Box::from_raw(slab.as_ptr()) };
-        self.utils.deallocate_pages(slab.page_start, self.pages);
+        self.env.deallocate_pages(slab.page_start, self.pages);
     }
 
-    #[inline]
+
     fn find_slab(&self, object: NonNull<u8>) -> NonNull<Slab> {
         let page_start =
             unsafe { NonNull::new_unchecked(align_down(object.as_ptr() as usize, PAGE_SIZE) as _) };
-        self.utils.find_slab_by_page(page_start).cast()
+        self.env.find_slab_by_page(page_start).cast()
     }
 }
 
-impl<Utils: MemCacheUtils> Drop for MemCache<Utils> {
+impl<Utils: Env> Drop for MemCache<Utils> {
     fn drop(&mut self) {
         for cpu_slab in self.cpu_slabs.iter() {
             let cpu_slab = unsafe { cpu_slab.get().as_mut().unwrap() };
             while let Some(slab) = cpu_slab.partial.pop() {
                 let slab = unsafe { slab.as_ref() };
-                self.utils.deallocate_pages(slab.page_start, self.pages);
+                self.env.deallocate_pages(slab.page_start, self.pages);
             }
             if let Some(slab) = cpu_slab.slab.take() {
                 let slab = unsafe { slab.as_ref() };
-                self.utils.deallocate_pages(slab.page_start, self.pages);
+                self.env.deallocate_pages(slab.page_start, self.pages);
             }
         }
         let mut partial = self.partial.lock();
         while let Some(slab) = partial.pop() {
             let slab = unsafe { slab.as_ref() };
-            self.utils.deallocate_pages(slab.page_start, self.pages);
+            self.env.deallocate_pages(slab.page_start, self.pages);
         }
     }
 }
@@ -260,8 +258,8 @@ pub fn align_down(addr: usize, align: usize) -> usize {
     addr & !(align - 1)
 }
 
-unsafe impl<T: MemCacheUtils> Send for MemCache<T> {}
-unsafe impl<T: MemCacheUtils> Sync for MemCache<T> {}
+unsafe impl<T: Env> Send for MemCache<T> {}
+unsafe impl<T: Env> Sync for MemCache<T> {}
 
 pub struct Slab {
     page_start: NonNull<u8>,
@@ -505,8 +503,8 @@ mod tests {
     use threadpool::ThreadPool;
 
     #[inline]
-    fn mem_cache(cpu_count: usize) -> MemCache<StdMemCacheUtils> {
-        let utils = StdMemCacheUtils::new(1024);
+    fn mem_cache(cpu_count: usize) -> MemCache<StdEnv> {
+        let utils = StdEnv::new(1024);
         MemCache::new(cpu_count, 16, 4, 8, utils)
     }
 

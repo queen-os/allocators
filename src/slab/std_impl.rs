@@ -121,7 +121,7 @@ impl Drop for Registration {
 }
 
 #[derive(Debug)]
-pub struct StdMemCacheUtils {
+pub struct StdEnv {
     chunk: NonNull<u8>,
     page_alloc: LockedFrameAlloc,
     pages: Box<[Page]>,
@@ -145,7 +145,7 @@ impl Page {
     }
 }
 
-impl StdMemCacheUtils {
+impl StdEnv {
     #[inline]
     pub fn new(pages_count: usize) -> Self {
         let chunk = unsafe {
@@ -174,7 +174,7 @@ impl StdMemCacheUtils {
     }
 }
 
-impl Drop for StdMemCacheUtils {
+impl Drop for StdEnv {
     fn drop(&mut self) {
         unsafe {
             std::alloc::dealloc(
@@ -185,7 +185,7 @@ impl Drop for StdMemCacheUtils {
     }
 }
 
-impl MemCacheUtils for StdMemCacheUtils {
+impl Env for StdEnv {
     type PreemptGuard = ();
 
     #[inline]

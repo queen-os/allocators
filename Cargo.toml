@@ -20,9 +20,9 @@ harness = false
 required-features = ["with_std"]
 
 [dependencies]
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "lazy"] }
-smallvec = "1.6"
-cache-padded = "1.1"
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "lazy", "rwlock"] }
+smallvec = "1.8"
+cache-padded = "1.2"
 atomic-stamped-ptr = { path = "../atomic-stamped-ptr" }
 threadpool = { version = "1.8", optional = true }
 
